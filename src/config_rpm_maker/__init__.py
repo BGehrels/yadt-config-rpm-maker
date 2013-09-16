@@ -1,4 +1,6 @@
 from config_rpm_maker.configRpmMaker import ConfigRpmMaker
+from config_rpm_maker.configRpmUploader import ConfigRpmUploader
+from config_rpm_maker.configViewerAdapter import ConfigViewerAdapter
 from config_rpm_maker.svn import SvnService
 from config_rpm_maker.exceptions import BaseConfigRpmMakerException
 from config_rpm_maker import config
@@ -32,7 +34,11 @@ def mainMethod(args=sys.argv[1:]):
             base_url = 'file://' + args[0],
             path_to_config = config.get('svn_path_to_config')
         )
-        ConfigRpmMaker(revision=args[1], svn_service=svn_service).build()
+        config_rpm_maker = ConfigRpmMaker(revision=args[1], svn_service=svn_service)
+        result = config_rpm_maker.build()
+        ConfigRpmUploader().upload_rpms(result.rpms)
+        ConfigViewerAdapter().move_configviewer_dirs_to_final_destination(result.affectedHosts)
+        config_rpm_maker.clean_up()
     except (BaseConfigRpmMakerException) as e:
         print "See the error log for details."
         sys.exit(1)

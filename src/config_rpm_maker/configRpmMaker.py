@@ -2,7 +2,6 @@
 from Queue import Queue
 import os
 import shutil
-import subprocess
 import tempfile
 import logging
 import traceback
@@ -14,6 +13,7 @@ from config_rpm_maker.hostRpmBuilder import HostRpmBuilder
 from config_rpm_maker.segment import OVERLAY_ORDER
 
 from config_rpm_maker.exceptions import BaseConfigRpmMakerException
+from config_rpm_maker.exceptions import ConfigurationException
 
 
 class BuildHostThread(Thread):
@@ -45,11 +45,6 @@ class BuildHostThread(Thread):
 class CouldNotBuildSomeRpmsException(BaseConfigRpmMakerException):
     error_info = "Could not build all rpms\n"
 
-class CouldNotUploadRpmsException(BaseConfigRpmMakerException):
-    error_info = "Could not upload rpms!\n"
-
-class ConfigurationException(BaseConfigRpmMakerException):
-    error_info = "Configuration error, please fix it\n"
 
 class ConfigRpmMaker(object):
 
@@ -68,10 +63,10 @@ class ConfigRpmMaker(object):
     def __build_error_msg_and_move_to_public_access(self, revision):
         err_url = config.get('error_log_url', '')
         err_suffix = 'See %s/%s.txt for details.\n\n' %(err_url, revision)
-        error_msg = self.ERROR_MSG %err_suffix 
+        error_msg = self.ERROR_MSG %err_suffix
         self.error_logger.error(error_msg)
         self._move_error_log_for_public_access()
-        self._clean_up_work_dir()
+        self.clean_up()
         return error_msg
 
 
@@ -88,8 +83,6 @@ class ConfigRpmMaker(object):
 
             self._prepare_work_dir()
             rpms = self._build_hosts(affected_hosts)
-            self._upload_rpms(rpms)
-            self._move_configviewer_dirs_to_final_destination(affected_hosts)
 
         except BaseConfigRpmMakerException, e:
             self.logger.error('Last error during build:\n%s'%str(e))
@@ -100,10 +93,9 @@ class ConfigRpmMaker(object):
             error_msg = self.__build_error_msg_and_move_to_public_access(self.revision)
             raise Exception('Unexpected error occurred, stacktrace will follow.\n%s\n\n%s' % (traceback.format_exc(), error_msg))
 
-        self._clean_up_work_dir()
-        return rpms
+        return {'rpms': rpms, 'affected_hosts': affected_hosts}
 
-    def _clean_up_work_dir(self):
+    def clean_up(self):
         if self.work_dir and os.path.exists(self.work_dir) and not self._keep_work_dir():
             shutil.rmtree(self.work_dir)
 
@@ -119,14 +111,6 @@ class ConfigRpmMaker(object):
             if not os.path.exists(error_log_dir):
                 os.makedirs(error_log_dir)
             shutil.move(self.error_log_file, os.path.join(error_log_dir, self.revision + '.txt'))
-
-    def _move_configviewer_dirs_to_final_destination(self, hosts):
-        for host in hosts:
-            temp_path = HostRpmBuilder.get_config_viewer_host_dir(host, True)
-            dest_path = HostRpmBuilder.get_config_viewer_host_dir(host)
-            if os.path.exists(dest_path):
-                shutil.rmtree(dest_path)
-            shutil.move(temp_path, dest_path)
 
     def _build_hosts(self, hosts):
         if not hosts:
@@ -168,20 +152,6 @@ class ConfigRpmMaker(object):
             raise CouldNotBuildSomeRpmsException("Could not build config rpm for some host(s): %s" % '\n'.join(failed_hosts_str))
 
         return self._consume_queue(rpm_queue)
-
-    def _upload_rpms(self, rpms):
-        rpm_upload_cmd = config.get('rpm_upload_cmd')
-        chunk_size = self._get_chunk_size(rpms)
-
-        if rpm_upload_cmd:
-            pos = 0
-            while pos < len(rpms):
-                rpm_chunk = rpms[pos:pos + chunk_size]
-                cmd = '%s %s' % (rpm_upload_cmd, ' '.join(rpm_chunk))
-                returncode = subprocess.call(cmd, shell=True)
-                if returncode:
-                    raise CouldNotUploadRpmsException('Could not upload rpms. Called %s . Returned: %d'%(cmd, returncode))
-                pos += chunk_size
 
     def _get_affected_hosts(self, change_set, available_host):
         result = set()
@@ -245,17 +215,3 @@ class ConfigRpmMaker(object):
             path = os.path.join(self.rpm_build_dir, name)
             if not os.path.exists(path):
                 os.makedirs(path)
-
-    def _get_chunk_size(self, rpms):
-        chunk_size_raw = config.get('rpm_upload_chunk_size', 0)
-        try:
-            chunk_size = int(chunk_size_raw)
-        except ValueError as e:
-            raise ConfigurationException('rpm_upload_chunk_size (%s) is not a legal value (should be int)'%chunk_size_raw)
-        if chunk_size < 0:
-            raise ConfigurationException("Config param 'rpm_upload_cmd_chunk_size' needs to be greater or equal 0")
-
-        if not chunk_size:
-            chunk_size = len(rpms)
-
-        return chunk_size
